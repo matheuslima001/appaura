@@ -5,7 +5,6 @@ export async function proxyTo(
   req: VercelRequest,
   res: VercelResponse
 ) {
-  // CORS sempre antes de qualquer coisa — garante que erros também são legíveis
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, PUT, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', '*')
@@ -16,16 +15,11 @@ export async function proxyTo(
   }
 
   try {
-    // Reconstrói o path a partir do catch-all [...path]
-    const segments = req.query.path
-    const path = segments
-      ? '/' + (Array.isArray(segments) ? segments.join('/') : segments)
-      : '/'
+    // O path da corretora vem como query param: ?path=/openApi/spot/v1/...
+    const pathParam = req.query.path
+    const path = Array.isArray(pathParam) ? pathParam[0] : (pathParam ?? '/')
 
-    // Reconstrói a query string a partir de req.query, EXCLUINDO o
-    // parâmetro interno "path" do catch-all do Vercel.
-    // NÃO usa req.url pois ele pode conter path=... injetado pelo Vercel,
-    // o que quebraria a verificação HMAC nas corretoras.
+    // Todos os outros query params (exceto 'path') são repassados à corretora
     const pairs: string[] = []
     for (const [key, val] of Object.entries(req.query)) {
       if (key === 'path') continue
@@ -38,14 +32,13 @@ export async function proxyTo(
     const qs = pairs.join('&')
     const targetUrl = `${base}${path}${qs ? '?' + qs : ''}`
 
-    // Repassa headers, removendo os de nível de conexão e os do browser
     const headers: Record<string, string> = {}
     for (const [key, val] of Object.entries(req.headers)) {
       if (
         [
           'host', 'origin', 'referer', 'connection', 'transfer-encoding',
-          'sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest', 'sec-ch-ua',
-          'sec-ch-ua-mobile', 'sec-ch-ua-platform',
+          'sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest',
+          'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform',
         ].includes(key.toLowerCase())
       ) continue
       if (typeof val === 'string') headers[key] = val

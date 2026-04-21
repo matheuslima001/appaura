@@ -1,8 +1,5 @@
 import type { Config, ExchangeId } from '../types'
 
-// ---------------------------------------------------------------------------
-// HMAC-SHA256 via Web Crypto API (browser-native, no external deps)
-// ---------------------------------------------------------------------------
 async function hmacSha256(secret: string, message: string): Promise<string> {
   const enc = new TextEncoder()
   const key = await crypto.subtle.importKey(
@@ -19,24 +16,15 @@ async function hmacSha256(secret: string, message: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// All exchange calls go through Vercel Serverless Functions to avoid CORS.
-// /api/bingx/* → https://open-api.bingx.com/*
-// /api/gate/*  → https://api.gateio.ws/*
-// /api/mexc/*  → https://api.mexc.com/*
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// BingX
+// BingX  →  /api/bingx-proxy?path=<exchange-path>&<query-params>
 // ---------------------------------------------------------------------------
 export async function fetchBingXBalance(apiKey: string, secret: string): Promise<number> {
-  // timestamp gerado por chamada — evita falha por reuso em chamadas sequenciais
-  async function bingxFetch(path: string, params: Record<string, string> = {}): Promise<any> {
+  async function bingxFetch(exchangePath: string, params: Record<string, string> = {}): Promise<any> {
     const timestamp = Date.now().toString()
     const query = new URLSearchParams({ ...params, timestamp }).toString()
     const signature = await hmacSha256(secret, query)
-    const res = await fetch(`/api/bingx${path}?${query}&signature=${signature}`, {
-      headers: { 'X-BX-APIKEY': apiKey },
-    })
+    const url = `/api/bingx-proxy?path=${encodeURIComponent(exchangePath)}&${query}&signature=${signature}`
+    const res = await fetch(url, { headers: { 'X-BX-APIKEY': apiKey } })
     if (!res.ok) {
       const body = await res.text()
       throw new Error(`BingX HTTP ${res.status}: ${body}`)
@@ -68,16 +56,16 @@ export async function fetchBingXBalance(apiKey: string, secret: string): Promise
 }
 
 // ---------------------------------------------------------------------------
-// Gate.io
+// Gate.io  →  /api/gate-proxy?path=<exchange-path>  (auth via headers)
 // ---------------------------------------------------------------------------
 export async function fetchGateBalance(apiKey: string, secret: string): Promise<number> {
-  async function gateRequest(method: string, path: string): Promise<any> {
+  async function gateRequest(method: string, exchangePath: string): Promise<any> {
     const timestamp = Math.floor(Date.now() / 1000).toString()
-    // SHA-256 of empty body
     const bodyHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
-    const signStr = `${method}\n${path}\n\n${bodyHash}\n${timestamp}`
+    const signStr = `${method}\n${exchangePath}\n\n${bodyHash}\n${timestamp}`
     const signature = await hmacSha256(secret, signStr)
-    const res = await fetch(`/api/gate${path}`, {
+    const url = `/api/gate-proxy?path=${encodeURIComponent(exchangePath)}`
+    const res = await fetch(url, {
       method,
       headers: {
         KEY: apiKey,
@@ -86,7 +74,10 @@ export async function fetchGateBalance(apiKey: string, secret: string): Promise<
         'Content-Type': 'application/json',
       },
     })
-    if (!res.ok) throw new Error(`Gate.io HTTP ${res.status}`)
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(`Gate.io HTTP ${res.status}: ${body}`)
+    }
     return res.json()
   }
 
@@ -106,17 +97,19 @@ export async function fetchGateBalance(apiKey: string, secret: string): Promise<
 }
 
 // ---------------------------------------------------------------------------
-// MEXC
+// MEXC  →  /api/mexc-proxy?path=<exchange-path>&<query-params>
 // ---------------------------------------------------------------------------
 export async function fetchMexcBalance(apiKey: string, secret: string): Promise<number> {
-  async function mexcRequest(path: string, params: Record<string, string> = {}): Promise<any> {
+  async function mexcRequest(exchangePath: string, params: Record<string, string> = {}): Promise<any> {
     const timestamp = Date.now().toString()
     const query = new URLSearchParams({ ...params, timestamp }).toString()
     const signature = await hmacSha256(secret, query)
-    const res = await fetch(`/api/mexc${path}?${query}&signature=${signature}`, {
-      headers: { 'X-MEXC-APIKEY': apiKey },
-    })
-    if (!res.ok) throw new Error(`MEXC HTTP ${res.status}`)
+    const url = `/api/mexc-proxy?path=${encodeURIComponent(exchangePath)}&${query}&signature=${signature}`
+    const res = await fetch(url, { headers: { 'X-MEXC-APIKEY': apiKey } })
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(`MEXC HTTP ${res.status}: ${body}`)
+    }
     return res.json()
   }
 

@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { proxyTo } from '../_proxy'
+import { proxyTo } from './_proxy'
 
 export default function handler(req: VercelRequest, res: VercelResponse) {
-  return proxyTo('https://api.mexc.com', req, res)
+  return proxyTo('https://open-api.bingx.com', req, res)
 }
