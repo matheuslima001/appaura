@@ -41,11 +41,11 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     proxy: {
-      '/proxy': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/proxy/, ''),
-      },
+      // Em desenvolvimento local, redireciona /api/* para o proxy Express
+      // Em produção (Vercel) as Serverless Functions tratam /api/* diretamente
+      '/api/bingx': { target: 'http://localhost:3001', changeOrigin: true },
+      '/api/gate':  { target: 'http://localhost:3001', changeOrigin: true },
+      '/api/mexc':  { target: 'http://localhost:3001', changeOrigin: true },
     },
   },
 })
