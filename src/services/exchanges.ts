@@ -37,7 +37,10 @@ export async function fetchBingXBalance(apiKey: string, secret: string): Promise
     const res = await fetch(`/api/bingx${path}?${query}&signature=${signature}`, {
       headers: { 'X-BX-APIKEY': apiKey },
     })
-    if (!res.ok) throw new Error(`BingX HTTP ${res.status}`)
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(`BingX HTTP ${res.status}: ${body}`)
+    }
     const data = await res.json()
     if (data.code !== 0) throw new Error(`BingX: ${data.msg}`)
     return data
