@@ -5,52 +5,61 @@ export async function proxyTo(
   req: VercelRequest,
   res: VercelResponse
 ) {
+  // CORS headers sempre primeiro — mesmo que a função falhe depois,
+  // o browser consegue ler a resposta de erro (sem isso → "Load failed")
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, PUT, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', '*')
+  res.setHeader('Access-Control-Max-Age', '86400')
 
   if (req.method === 'OPTIONS') {
-    res.status(200).end()
-    return
+    return res.status(204).end()
   }
 
   try {
-    // path segments from catch-all [...path]
+    // Reconstrói o path a partir do catch-all [...path]
     const segments = req.query.path
     const path = segments
       ? '/' + (Array.isArray(segments) ? segments.join('/') : segments)
       : '/'
 
-    // rebuild query string, excluding the catch-all 'path' key
-    const qs = new URLSearchParams()
-    for (const [key, val] of Object.entries(req.query)) {
-      if (key === 'path') continue
-      if (Array.isArray(val)) val.forEach((v) => qs.append(key, v))
-      else if (val) qs.append(key, val)
-    }
+    // Preserva a query string original do req.url (sem reordenar parâmetros).
+    // Crítico para HMAC-SHA256: a assinatura é calculada sobre a string exata.
+    const rawUrl = req.url ?? ''
+    const qIdx = rawUrl.indexOf('?')
+    const qs = qIdx >= 0 ? rawUrl.slice(qIdx + 1) : ''
 
-    const targetUrl = `${base}${path}${qs.toString() ? '?' + qs.toString() : ''}`
+    const targetUrl = `${base}${path}${qs ? '?' + qs : ''}`
 
-    // forward headers, strip connection-level ones
+    // Repassa headers, removendo os de nível de conexão
     const headers: Record<string, string> = {}
     for (const [key, val] of Object.entries(req.headers)) {
-      if (['host', 'origin', 'referer', 'connection', 'transfer-encoding'].includes(key.toLowerCase())) continue
+      if (
+        ['host', 'origin', 'referer', 'connection', 'transfer-encoding',
+         'sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest'].includes(key.toLowerCase())
+      ) continue
       if (typeof val === 'string') headers[key] = val
     }
 
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD'
-    const body = hasBody && req.body ? JSON.stringify(req.body) : undefined
+    const upstream = await fetch(targetUrl, {
+      method: req.method,
+      headers,
+      body: hasBody && req.body ? JSON.stringify(req.body) : undefined,
+    })
 
-    const upstream = await fetch(targetUrl, { method: req.method, headers, body })
-
-    // forward response headers (skip hop-by-hop)
+    // Repassa headers da resposta, exceto hop-by-hop
     upstream.headers.forEach((val, key) => {
-      if (['transfer-encoding', 'connection', 'keep-alive'].includes(key.toLowerCase())) return
+      if (['transfer-encoding', 'connection', 'keep-alive', 'content-encoding'].includes(key.toLowerCase())) return
       res.setHeader(key, val)
     })
 
-    res.status(upstream.status).send(await upstream.text())
+    return res.status(upstream.status).send(await upstream.text())
   } catch (err: any) {
-    res.status(502).json({ error: err.message ?? 'Proxy error' })
+    console.error('[proxy] error:', err)
+    return res.status(502).json({
+      error: err?.message ?? 'Proxy error',
+      target: base,
+    })
   }
 }
