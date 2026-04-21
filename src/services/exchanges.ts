@@ -29,9 +29,9 @@ async function hmacSha256(secret: string, message: string): Promise<string> {
 // BingX
 // ---------------------------------------------------------------------------
 export async function fetchBingXBalance(apiKey: string, secret: string): Promise<number> {
-  const timestamp = Date.now().toString()
-
+  // timestamp gerado por chamada — evita falha por reuso em chamadas sequenciais
   async function bingxFetch(path: string, params: Record<string, string> = {}): Promise<any> {
+    const timestamp = Date.now().toString()
     const query = new URLSearchParams({ ...params, timestamp }).toString()
     const signature = await hmacSha256(secret, query)
     const res = await fetch(`/api/bingx${path}?${query}&signature=${signature}`, {
