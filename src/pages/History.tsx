@@ -1,12 +1,20 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronUp, TrendingUp, TrendingDown } from 'lucide-react'
-import { getHistory } from '../services/storage'
-import { formatUSDT, formatBRL, formatPct, formatDate } from '../utils/format'
-import type { DayRecord } from '../types'
+import { getSnapshotHistory } from '../services/storage'
+import { formatUSDT, formatBRL, formatPct } from '../utils/format'
+import type { SnapshotRecord } from '../types'
 
-function DayCard({ record }: { record: DayRecord }) {
+function formatDateTime(iso: string) {
+  const d = new Date(iso)
+  return d.toLocaleString('pt-BR', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function SnapshotCard({ record }: { record: SnapshotRecord }) {
   const [open, setOpen] = useState(false)
-  const positive = (record.profitPct ?? 0) >= 0
+  const positive = record.profitUSDT >= 0
 
   return (
     <div className="rounded-2xl bg-slate-800/60 border border-slate-700/50 overflow-hidden">
@@ -15,84 +23,52 @@ function DayCard({ record }: { record: DayRecord }) {
         onClick={() => setOpen((v) => !v)}
       >
         <div className="flex items-center gap-3">
-          <div className={`w-2 h-2 rounded-full ${record.closed ? (positive ? 'bg-emerald-400' : 'bg-red-400') : 'bg-yellow-400'}`} />
+          <div className={`w-2 h-2 rounded-full ${positive ? 'bg-emerald-400' : 'bg-red-400'}`} />
           <div>
-            <p className="font-semibold text-white">{formatDate(record.date)}</p>
+            <p className="font-semibold text-white text-sm">{formatDateTime(record.endSnapshot.timestamp)}</p>
             <p className="text-xs text-slate-500">
-              {record.closed ? 'Fechado' : 'Em aberto'} · {formatUSDT(record.startBalance.total)} USDT inicial
+              Base: {formatUSDT(record.startSnapshot.balance)} → {formatUSDT(record.endSnapshot.balance)} USDT
             </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          {record.closed && record.profitPct !== undefined && (
-            <div className={`text-right ${positive ? 'text-emerald-400' : 'text-red-400'}`}>
-              <p className="font-semibold text-sm">{formatPct(record.profitPct)}</p>
-              <p className="text-xs">{formatBRL(record.profitBRL ?? 0)}</p>
-            </div>
-          )}
+          <div className={`text-right ${positive ? 'text-emerald-400' : 'text-red-400'}`}>
+            <p className="font-semibold text-sm">{formatPct(record.profitPct)}</p>
+            <p className="text-xs">{record.profitUSDT >= 0 ? '+' : ''}{formatUSDT(record.profitUSDT)}</p>
+          </div>
           {open ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
         </div>
       </button>
 
       {open && (
         <div className="border-t border-slate-700/50 p-4 space-y-3">
-          {/* Summary */}
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-xl bg-slate-700/40 p-3">
-              <p className="text-xs text-slate-500 mb-1">Banca Inicial</p>
-              <p className="font-semibold text-white text-sm">{formatUSDT(record.startBalance.total)} USDT</p>
+              <p className="text-xs text-slate-500 mb-1">Snapshot Base</p>
+              <p className="font-semibold text-white text-sm">{formatUSDT(record.startSnapshot.balance)} USDT</p>
+              <p className="text-xs text-slate-500">{formatDateTime(record.startSnapshot.timestamp)}</p>
             </div>
-            {record.endBalance && (
-              <div className="rounded-xl bg-slate-700/40 p-3">
-                <p className="text-xs text-slate-500 mb-1">Banca Final</p>
-                <p className="font-semibold text-white text-sm">{formatUSDT(record.endBalance.total)} USDT</p>
-              </div>
-            )}
-            {record.profitUSDT !== undefined && (
-              <div className={`rounded-xl p-3 ${positive ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
-                <p className="text-xs text-slate-500 mb-1">Lucro USDT</p>
-                <p className={`font-semibold text-sm ${positive ? 'text-emerald-300' : 'text-red-300'}`}>
-                  {record.profitUSDT >= 0 ? '+' : ''}{formatUSDT(record.profitUSDT)}
-                </p>
-              </div>
-            )}
-            {record.profitBRL !== undefined && (
-              <div className={`rounded-xl p-3 ${positive ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
-                <p className="text-xs text-slate-500 mb-1">Lucro BRL</p>
-                <p className={`font-semibold text-sm ${positive ? 'text-emerald-300' : 'text-red-300'}`}>
-                  {formatBRL(record.profitBRL)}
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* Per exchange breakdown */}
-          <div>
-            <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Breakdown por Corretora</p>
-            <div className="space-y-2">
-              {(['bingx', 'gate', 'mexc'] as const).map((id) => {
-                const names = { bingx: 'BingX', gate: 'Gate.io', mexc: 'MEXC' }
-                const start = record.startBalance[id]
-                const end = record.endBalance?.[id]
-                const diff = end !== undefined ? end - start : null
-                return (
-                  <div key={id} className="flex items-center justify-between text-sm">
-                    <span className="text-slate-400">{names[id]}</span>
-                    <div className="text-right">
-                      <span className="text-white">{formatUSDT(end ?? start)} USDT</span>
-                      {diff !== null && (
-                        <span className={`ml-2 text-xs ${diff >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {diff >= 0 ? '+' : ''}{formatUSDT(diff)}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
+            <div className="rounded-xl bg-slate-700/40 p-3">
+              <p className="text-xs text-slate-500 mb-1">Snapshot Final</p>
+              <p className="font-semibold text-white text-sm">{formatUSDT(record.endSnapshot.balance)} USDT</p>
+              <p className="text-xs text-slate-500">{formatDateTime(record.endSnapshot.timestamp)}</p>
+            </div>
+            <div className={`rounded-xl p-3 ${positive ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
+              <p className="text-xs text-slate-500 mb-1">Lucro USDT</p>
+              <p className={`font-semibold text-sm ${positive ? 'text-emerald-300' : 'text-red-300'}`}>
+                {record.profitUSDT >= 0 ? '+' : ''}{formatUSDT(record.profitUSDT)}
+              </p>
+            </div>
+            <div className={`rounded-xl p-3 ${positive ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
+              <p className="text-xs text-slate-500 mb-1">Lucro BRL</p>
+              <p className={`font-semibold text-sm ${positive ? 'text-emerald-300' : 'text-red-300'}`}>
+                {formatBRL(record.profitBRL)}
+              </p>
             </div>
           </div>
-
-          <p className="text-xs text-slate-600">USD/BRL na época: R$ {record.usdBrlRate.toFixed(4)}</p>
+          <p className="text-xs text-slate-600">
+            USD/BRL na base: R$ {record.startSnapshot.usdBrlRate.toFixed(4)}
+          </p>
         </div>
       )}
     </div>
@@ -100,23 +76,22 @@ function DayCard({ record }: { record: DayRecord }) {
 }
 
 export default function History() {
-  const records = getHistory()
+  const records = getSnapshotHistory()
     .slice()
-    .sort((a, b) => b.date.localeCompare(a.date))
+    .sort((a, b) => b.endSnapshot.timestamp.localeCompare(a.endSnapshot.timestamp))
 
-  const closedRecords = records.filter((r) => r.closed)
-  const totalProfitUSDT = closedRecords.reduce((s, r) => s + (r.profitUSDT ?? 0), 0)
-  const totalProfitBRL = closedRecords.reduce((s, r) => s + (r.profitBRL ?? 0), 0)
+  const totalProfitUSDT = records.reduce((s, r) => s + r.profitUSDT, 0)
+  const totalProfitBRL = records.reduce((s, r) => s + r.profitBRL, 0)
   const positive = totalProfitUSDT >= 0
 
   return (
     <div className="flex-1 px-4 pt-6 pb-28 space-y-4">
       <div>
         <p className="text-xs text-slate-500 uppercase tracking-widest">Histórico</p>
-        <h1 className="text-xl font-bold text-white">{records.length} dias registrados</h1>
+        <h1 className="text-xl font-bold text-white">{records.length} snapshots registrados</h1>
       </div>
 
-      {closedRecords.length > 0 && (
+      {records.length > 0 && (
         <div className={`rounded-2xl p-4 border ${positive ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-red-500/10 border-red-500/30'}`}>
           <div className="flex items-center gap-2 mb-2">
             {positive ? <TrendingUp size={16} className="text-emerald-400" /> : <TrendingDown size={16} className="text-red-400" />}
@@ -131,13 +106,13 @@ export default function History() {
 
       {records.length === 0 ? (
         <div className="text-center py-16 text-slate-600">
-          <p className="text-4xl mb-3">📭</p>
-          <p>Nenhum registro encontrado.</p>
-          <p className="text-sm mt-1">Inicie o dia no Dashboard.</p>
+          <p className="text-4xl mb-3">📷</p>
+          <p>Nenhum snapshot registrado.</p>
+          <p className="text-sm mt-1">Use "Novo Snapshot" no Dashboard para salvar.</p>
         </div>
       ) : (
         <div className="space-y-3">
-          {records.map((r) => <DayCard key={r.date} record={r} />)}
+          {records.map((r) => <SnapshotCard key={r.id} record={r} />)}
         </div>
       )}
     </div>

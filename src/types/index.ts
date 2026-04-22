@@ -54,3 +54,18 @@ export interface Operation {
 }
 
 export type RefreshInterval = 20 | 60 | 120 | 240
+
+export interface Snapshot {
+  balance: number
+  timestamp: string  // ISO string
+  usdBrlRate: number
+}
+
+export interface SnapshotRecord {
+  id: string
+  startSnapshot: Snapshot
+  endSnapshot: Snapshot
+  profitUSDT: number
+  profitBRL: number
+  profitPct: number
+}

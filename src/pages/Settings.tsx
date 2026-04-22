@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { Eye, EyeOff, CheckCircle, XCircle, Download, Trash2, Wifi } from 'lucide-react'
-import { getConfig, saveConfig, getHistory, clearAllData, exportCSV, getRefreshInterval, saveRefreshInterval } from '../services/storage'
+import { getConfig, saveConfig, getSnapshotHistory, clearAllData, getRefreshInterval, saveRefreshInterval } from '../services/storage'
 import { fetchExchangeBalance } from '../services/exchanges'
 import Spinner from '../components/Spinner'
 import type { Config, ExchangeId, RefreshInterval } from '../types'
@@ -140,12 +140,31 @@ export default function Settings() {
   }
 
   function handleExport() {
-    const records = getHistory()
+    const records = getSnapshotHistory()
     if (records.length === 0) {
-      toast.error('Nenhum registro para exportar')
+      toast.error('Nenhum snapshot para exportar')
       return
     }
-    exportCSV(records)
+    const header = 'Base Timestamp,Base USDT,Final Timestamp,Final USDT,Lucro USDT,Lucro BRL,Lucro %'
+    const rows = records
+      .sort((a, b) => a.endSnapshot.timestamp.localeCompare(b.endSnapshot.timestamp))
+      .map((r) => [
+        r.startSnapshot.timestamp,
+        r.startSnapshot.balance.toFixed(2),
+        r.endSnapshot.timestamp,
+        r.endSnapshot.balance.toFixed(2),
+        r.profitUSDT.toFixed(2),
+        r.profitBRL.toFixed(2),
+        r.profitPct.toFixed(4),
+      ].join(','))
+    const csv = [header, ...rows].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `aura_snapshots_${new Date().toISOString().split('T')[0]}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
     toast.success('CSV exportado!')
   }
 

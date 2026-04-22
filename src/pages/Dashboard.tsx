@@ -1,124 +1,142 @@
 import { useState } from 'react'
 import toast from 'react-hot-toast'
-import { RefreshCw, Play, StopCircle, TrendingUp, TrendingDown, Clock } from 'lucide-react'
+import { Camera, RefreshCw, RotateCcw, Clock, TrendingUp, TrendingDown } from 'lucide-react'
 import Spinner from '../components/Spinner'
-import { getConfig, getDayRecord, upsertDayRecord, getHistory, getOperations } from '../services/storage'
-import { fetchAllBalances } from '../services/exchanges'
+import {
+  getBaseSnapshot, saveBaseSnapshot,
+  addSnapshotRecord, getSnapshotHistory, getOperations,
+} from '../services/storage'
 import { getUsdBrlRate } from '../services/rates'
 import { useBalances } from '../context/BalancesContext'
-import { formatUSDT, formatBRL, formatPct, formatDate, todayStr, formatTime } from '../utils/format'
-import type { DayRecord } from '../types'
+import { formatUSDT, formatBRL, formatPct, formatTime, todayStr } from '../utils/format'
+import type { Snapshot, SnapshotRecord } from '../types'
 
-function pnlForPeriod(days: number, history: DayRecord[]) {
-  const closed = history.filter((r) => r.closed && r.profitUSDT !== undefined)
-  if (days === 0) return closed.reduce((s, r) => s + (r.profitUSDT ?? 0), 0)
-  const cutoff = new Date()
-  cutoff.setDate(cutoff.getDate() - days)
-  const cutoffStr = cutoff.toISOString().split('T')[0]
-  return closed.filter((r) => r.date >= cutoffStr).reduce((s, r) => s + (r.profitUSDT ?? 0), 0)
+function newId() {
+  return `snap_${Date.now()}`
 }
 
-function yesterdayStr() {
+function pnlForDays(days: number) {
+  const history = getSnapshotHistory()
+  if (!days) return history.reduce((s, r) => s + r.profitUSDT, 0)
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - days)
+  const cutoffISO = cutoff.toISOString()
+  return history
+    .filter((r) => r.endSnapshot.timestamp >= cutoffISO)
+    .reduce((s, r) => s + r.profitUSDT, 0)
+}
+
+function yesterdayISO() {
   const d = new Date()
   d.setDate(d.getDate() - 1)
-  return d.toISOString().split('T')[0]
+  d.setHours(0, 0, 0, 0)
+  return d.toISOString()
+}
+
+function todayISO() {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d.toISOString()
 }
 
 export default function Dashboard() {
-  const today = todayStr()
-  const yesterday = yesterdayStr()
-  const { totalBalance, usdBrl, loading: ctxLoading, lastUpdate, refresh } = useBalances()
-  const [dayRecord, setDayRecord] = useState<DayRecord | undefined>(() => getDayRecord(today))
+  const { totalBalance, usdBrl, loading, lastUpdate, refresh } = useBalances()
+  const [baseSnapshot, setBaseSnapshot] = useState<Snapshot | null>(() => getBaseSnapshot())
   const [actionLoading, setActionLoading] = useState(false)
+  const [showResetConfirm, setShowResetConfirm] = useState(false)
 
-  const loading = ctxLoading || actionLoading
-  const config = getConfig()
-  const history = getHistory()
+  const isLoading = loading || actionLoading
+
   const operations = getOperations()
   const openOps = operations.filter((o) => o.status === 'open')
   const inPositions = openOps.reduce((s, o) => s + o.entryPrice * o.qty, 0)
   const available = totalBalance - inPositions
 
-  const todayRecord = getDayRecord(today)
-  const yesterdayRecord = getDayRecord(yesterday)
-
-  const todayPnl = todayRecord?.closed
-    ? todayRecord.profitUSDT ?? 0
-    : todayRecord
-    ? totalBalance - todayRecord.startBalance.total
+  const liveProfitUSDT = baseSnapshot ? totalBalance - baseSnapshot.balance : 0
+  const liveProfitBRL = liveProfitUSDT * usdBrl
+  const liveProfitPct = baseSnapshot && baseSnapshot.balance > 0
+    ? (liveProfitUSDT / baseSnapshot.balance) * 100
     : 0
+  const profitPositive = liveProfitUSDT >= 0
 
-  const yesterdayPnl = yesterdayRecord?.profitUSDT ?? 0
-  const pnl7d = pnlForPeriod(7, history)
-  const pnl30d = pnlForPeriod(30, history)
+  const history = getSnapshotHistory()
+  const todayStart = todayISO()
+  const yesterdayStart = yesterdayISO()
+  const todayPnl = history
+    .filter((r) => r.endSnapshot.timestamp >= todayStart)
+    .reduce((s, r) => s + r.profitUSDT, 0)
+  const yesterdayPnl = history
+    .filter((r) => r.endSnapshot.timestamp >= yesterdayStart && r.endSnapshot.timestamp < todayStart)
+    .reduce((s, r) => s + r.profitUSDT, 0)
+  const pnl7d = pnlForDays(7)
+  const pnl30d = pnlForDays(30)
 
-  const profit = dayRecord?.closed
-    ? { usdt: dayRecord.profitUSDT ?? 0, brl: dayRecord.profitBRL ?? 0, pct: dayRecord.profitPct ?? 0 }
-    : dayRecord
-    ? {
-        usdt: totalBalance - dayRecord.startBalance.total,
-        brl: (totalBalance - dayRecord.startBalance.total) * usdBrl,
-        pct:
-          dayRecord.startBalance.total > 0
-            ? ((totalBalance - dayRecord.startBalance.total) / dayRecord.startBalance.total) * 100
-            : 0,
-      }
-    : null
-
-  const profitPositive = profit ? profit.usdt >= 0 : null
-
-  async function handleStartDay() {
-    if (dayRecord) { toast.error('Dia já iniciado'); return }
+  async function handleSnapshot() {
     setActionLoading(true)
     try {
-      const [rate, balances] = await Promise.all([getUsdBrlRate(), fetchAllBalances(config)])
-      const record: DayRecord = {
-        date: today,
-        startBalance: {
-          bingx: balances.bingx,
-          gate: balances.gate,
-          mexc: balances.mexc,
-          total: balances.bingx + balances.gate + balances.mexc,
-        },
+      const rate = await getUsdBrlRate()
+      const snap: Snapshot = {
+        balance: totalBalance,
+        timestamp: new Date().toISOString(),
         usdBrlRate: rate,
-        closed: false,
       }
-      upsertDayRecord(record)
-      setDayRecord(record)
-      await refresh()
-      toast.success('Dia iniciado!')
+      saveBaseSnapshot(snap)
+      setBaseSnapshot(snap)
+      toast.success('Snapshot registrado!')
     } catch {
-      toast.error('Erro ao buscar saldos')
+      toast.error('Erro ao registrar snapshot')
     } finally {
       setActionLoading(false)
     }
   }
 
-  async function handleCloseDay() {
-    if (!dayRecord) { toast.error('Inicie o dia primeiro'); return }
-    if (dayRecord.closed) { toast.error('Dia já fechado'); return }
+  async function handleNewSnapshot() {
+    if (!baseSnapshot) return
     setActionLoading(true)
     try {
-      const [rate, balances] = await Promise.all([getUsdBrlRate(), fetchAllBalances(config)])
-      const endTotal = balances.bingx + balances.gate + balances.mexc
-      const profitUSDT = endTotal - dayRecord.startBalance.total
+      const rate = await getUsdBrlRate()
+      const endSnap: Snapshot = {
+        balance: totalBalance,
+        timestamp: new Date().toISOString(),
+        usdBrlRate: rate,
+      }
+      const profitUSDT = endSnap.balance - baseSnapshot.balance
       const profitBRL = profitUSDT * rate
-      const profitPct = dayRecord.startBalance.total > 0 ? (profitUSDT / dayRecord.startBalance.total) * 100 : 0
-      const updated: DayRecord = {
-        ...dayRecord,
-        endBalance: { ...balances, total: endTotal },
+      const profitPct = baseSnapshot.balance > 0 ? (profitUSDT / baseSnapshot.balance) * 100 : 0
+      const record: SnapshotRecord = {
+        id: newId(),
+        startSnapshot: baseSnapshot,
+        endSnapshot: endSnap,
         profitUSDT,
         profitBRL,
         profitPct,
-        usdBrlRate: rate,
-        closed: true,
       }
-      upsertDayRecord(updated)
-      setDayRecord(updated)
-      await refresh()
-      toast.success('Dia fechado com sucesso!')
+      addSnapshotRecord(record)
+      saveBaseSnapshot(endSnap)
+      setBaseSnapshot(endSnap)
+      toast.success('Snapshot salvo no histórico!')
     } catch {
-      toast.error('Erro ao fechar o dia')
+      toast.error('Erro ao salvar snapshot')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  async function handleReset() {
+    setActionLoading(true)
+    setShowResetConfirm(false)
+    try {
+      const rate = await getUsdBrlRate()
+      const snap: Snapshot = {
+        balance: totalBalance,
+        timestamp: new Date().toISOString(),
+        usdBrlRate: rate,
+      }
+      saveBaseSnapshot(snap)
+      setBaseSnapshot(snap)
+      toast.success('Referência zerada!')
+    } catch {
+      toast.error('Erro ao redefinir referência')
     } finally {
       setActionLoading(false)
     }
@@ -148,21 +166,30 @@ export default function Dashboard() {
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs text-slate-500 uppercase tracking-widest">Dashboard</p>
-          <h1 className="text-xl font-bold text-white">{formatDate(today)}</h1>
+          <h1 className="text-xl font-bold text-white">{todayStr().split('-').reverse().join('/')}</h1>
         </div>
-        {lastUpdate && (
-          <div className="flex items-center gap-1 text-xs text-slate-500">
-            <Clock size={12} />
-            {formatTime(lastUpdate)}
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {lastUpdate && (
+            <div className="flex items-center gap-1 text-xs text-slate-500">
+              <Clock size={12} />
+              {formatTime(lastUpdate)}
+            </div>
+          )}
+          <button
+            onClick={handleRefresh}
+            disabled={isLoading}
+            className="p-2 rounded-xl bg-slate-800 border border-slate-700/50 text-slate-400 hover:text-white disabled:opacity-50 transition-colors"
+          >
+            {isLoading ? <Spinner size={15} /> : <RefreshCw size={15} />}
+          </button>
+        </div>
       </div>
 
       {/* Total Balance */}
       <div className="rounded-2xl bg-gradient-to-br from-violet-600/30 to-indigo-800/20 border border-violet-500/30 p-5">
         <p className="text-xs text-violet-300 uppercase tracking-wider mb-1">Saldo Total</p>
         <div className="flex items-end gap-3">
-          {loading ? (
+          {isLoading && !totalBalance ? (
             <Spinner size={28} />
           ) : (
             <>
@@ -172,9 +199,9 @@ export default function Dashboard() {
           )}
         </div>
         <p className="text-sm text-slate-400 mt-1">{formatBRL(totalBalance * usdBrl)}</p>
-        {dayRecord && (
+        {baseSnapshot && (
           <p className="text-xs text-slate-500 mt-2">
-            Abertura: {formatUSDT(dayRecord.startBalance.total)} USDT
+            Base: {formatUSDT(baseSnapshot.balance)} USDT · {formatTime(new Date(baseSnapshot.timestamp))}
           </p>
         )}
       </div>
@@ -195,7 +222,30 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* PnL by period */}
+      {/* Live profit since snapshot */}
+      {baseSnapshot && (
+        <div className={`rounded-2xl border p-5 ${profitPositive ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-red-500/10 border-red-500/30'}`}>
+          <div className="flex items-center gap-2 mb-2">
+            {profitPositive
+              ? <TrendingUp size={18} className="text-emerald-400" />
+              : <TrendingDown size={18} className="text-red-400" />}
+            <p className={`text-xs uppercase tracking-wider ${profitPositive ? 'text-emerald-300' : 'text-red-300'}`}>
+              Lucro desde snapshot
+            </p>
+          </div>
+          <div className="flex items-baseline gap-2">
+            <span className={`text-2xl font-bold ${profitPositive ? 'text-emerald-300' : 'text-red-300'}`}>
+              {formatPct(liveProfitPct)}
+            </span>
+            <span className={`text-sm ${profitPositive ? 'text-emerald-400' : 'text-red-400'}`}>
+              {liveProfitUSDT >= 0 ? '+' : ''}{formatUSDT(liveProfitUSDT)} USDT
+            </span>
+          </div>
+          <p className="text-sm text-slate-400 mt-1">{formatBRL(liveProfitBRL)}</p>
+        </div>
+      )}
+
+      {/* PnL by period (from snapshot history) */}
       <div>
         <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">PnL por Período</p>
         <div className="flex gap-2">
@@ -206,68 +256,60 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Day Profit */}
-      {profit !== null && (
-        <div className={`rounded-2xl border p-5 ${profitPositive ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-red-500/10 border-red-500/30'}`}>
-          <div className="flex items-center gap-2 mb-2">
-            {profitPositive ? <TrendingUp size={18} className="text-emerald-400" /> : <TrendingDown size={18} className="text-red-400" />}
-            <p className={`text-xs uppercase tracking-wider ${profitPositive ? 'text-emerald-300' : 'text-red-300'}`}>
-              Lucro do Dia {dayRecord?.closed && <span className="ml-1 bg-slate-700 px-1.5 py-0.5 rounded-full text-slate-400">Fechado</span>}
-            </p>
-          </div>
-          <div className="flex items-baseline gap-2">
-            <span className={`text-2xl font-bold ${profitPositive ? 'text-emerald-300' : 'text-red-300'}`}>
-              {formatPct(profit.pct)}
-            </span>
-            <span className={`text-sm ${profitPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-              {profit.usdt >= 0 ? '+' : ''}{formatUSDT(profit.usdt)} USDT
-            </span>
-          </div>
-          <p className="text-sm text-slate-400 mt-1">{formatBRL(profit.brl)}</p>
-        </div>
-      )}
-
-      {/* Action Buttons */}
-      <div className="space-y-3 pt-2">
-        {!dayRecord && (
+      {/* Action buttons */}
+      <div className="space-y-3 pt-1">
+        {!baseSnapshot ? (
           <button
-            onClick={handleStartDay}
-            disabled={loading}
+            onClick={handleSnapshot}
+            disabled={isLoading}
             className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-semibold transition-colors"
           >
-            {loading ? <Spinner size={18} /> : <Play size={18} />}
-            Iniciar Dia
+            {isLoading ? <Spinner size={18} /> : <Camera size={18} />}
+            Registrar Snapshot
           </button>
-        )}
-        {dayRecord && !dayRecord.closed && (
+        ) : (
           <>
             <button
-              onClick={handleRefresh}
-              disabled={loading}
-              className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-semibold transition-colors"
+              onClick={handleNewSnapshot}
+              disabled={isLoading}
+              className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-semibold transition-colors"
             >
-              {loading ? <Spinner size={18} /> : <RefreshCw size={18} />}
-              Atualizar Saldos
+              {isLoading ? <Spinner size={18} /> : <Camera size={18} />}
+              Novo Snapshot
             </button>
-            <button
-              onClick={handleCloseDay}
-              disabled={loading}
-              className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white font-semibold transition-colors"
-            >
-              {loading ? <Spinner size={18} /> : <StopCircle size={18} />}
-              Fechar Dia
-            </button>
+
+            {!showResetConfirm ? (
+              <button
+                onClick={() => setShowResetConfirm(true)}
+                disabled={isLoading}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-2xl border border-slate-600 text-slate-400 hover:text-white hover:bg-slate-700/60 disabled:opacity-50 text-sm transition-colors"
+              >
+                <RotateCcw size={15} />
+                Resetar referência
+              </button>
+            ) : (
+              <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 space-y-3">
+                <p className="text-sm text-center text-amber-300">
+                  Definir {formatUSDT(totalBalance)} USDT como nova referência?<br />
+                  <span className="text-xs text-slate-400">O lucro será zerado. Não salva no histórico.</span>
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setShowResetConfirm(false)}
+                    className="flex-1 py-2.5 rounded-xl border border-slate-600 text-slate-300 text-sm hover:bg-slate-700/60 transition-colors"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    className="flex-1 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold transition-colors"
+                  >
+                    Confirmar
+                  </button>
+                </div>
+              </div>
+            )}
           </>
-        )}
-        {dayRecord?.closed && (
-          <button
-            onClick={handleRefresh}
-            disabled={loading}
-            className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-semibold transition-colors"
-          >
-            {loading ? <Spinner size={18} /> : <RefreshCw size={18} />}
-            Atualizar Saldos
-          </button>
         )}
       </div>
 

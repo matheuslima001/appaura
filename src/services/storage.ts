@@ -1,10 +1,12 @@
-import type { Config, DayRecord, Operation, RefreshInterval } from '../types'
+import type { Config, DayRecord, Operation, RefreshInterval, Snapshot, SnapshotRecord } from '../types'
 
 const KEYS = {
   config: 'aura_config',
   history: 'aura_history',
   operations: 'aura_operations',
   refreshInterval: 'aura_refresh_interval',
+  baseSnapshot: 'aura_base_snapshot',
+  snapshotHistory: 'aura_snapshot_history',
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -93,34 +95,43 @@ export function saveRefreshInterval(interval: RefreshInterval): void {
   localStorage.setItem(KEYS.refreshInterval, String(interval))
 }
 
+export function getBaseSnapshot(): Snapshot | null {
+  try {
+    const raw = localStorage.getItem(KEYS.baseSnapshot)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+export function saveBaseSnapshot(s: Snapshot): void {
+  localStorage.setItem(KEYS.baseSnapshot, JSON.stringify(s))
+}
+
+export function clearBaseSnapshot(): void {
+  localStorage.removeItem(KEYS.baseSnapshot)
+}
+
+export function getSnapshotHistory(): SnapshotRecord[] {
+  try {
+    const raw = localStorage.getItem(KEYS.snapshotHistory)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+export function addSnapshotRecord(record: SnapshotRecord): void {
+  const history = getSnapshotHistory()
+  history.push(record)
+  localStorage.setItem(KEYS.snapshotHistory, JSON.stringify(history))
+}
+
 export function clearAllData(): void {
   localStorage.removeItem(KEYS.config)
   localStorage.removeItem(KEYS.history)
   localStorage.removeItem(KEYS.operations)
+  localStorage.removeItem(KEYS.baseSnapshot)
+  localStorage.removeItem(KEYS.snapshotHistory)
 }
 
-export function exportCSV(records: DayRecord[]): void {
-  const header = 'Data,Banca Inicial (USDT),Banca Final (USDT),Lucro USDT,Lucro BRL,Lucro %,Cotação USD/BRL'
-  const rows = records
-    .filter((r) => r.closed)
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .map((r) =>
-      [
-        r.date,
-        r.startBalance.total.toFixed(2),
-        r.endBalance?.total.toFixed(2) ?? '',
-        r.profitUSDT?.toFixed(2) ?? '',
-        r.profitBRL?.toFixed(2) ?? '',
-        r.profitPct?.toFixed(4) ?? '',
-        r.usdBrlRate.toFixed(4),
-      ].join(',')
-    )
-  const csv = [header, ...rows].join('\n')
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `aura_historico_${new Date().toISOString().split('T')[0]}.csv`
-  a.click()
-  URL.revokeObjectURL(url)
-}
