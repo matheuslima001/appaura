@@ -146,25 +146,34 @@ export async function fetchMexcBalance(apiKey: string, secret: string): Promise<
     return res.json()
   }
 
+  // Spot: GET /api/v3/account → balances[].asset === "USDT"
   const spotData = await mexcRequest('/api/v3/account')
   let spotUsdt = 0
-  if (spotData?.balances) {
+  if (Array.isArray(spotData?.balances)) {
     for (const b of spotData.balances) {
-      if (b.asset === 'USDT') spotUsdt = parseFloat(b.free ?? 0) + parseFloat(b.locked ?? 0)
+      if (b.asset === 'USDT') {
+        spotUsdt = parseFloat(b.free ?? '0') + parseFloat(b.locked ?? '0')
+        break
+      }
     }
   }
 
+  // Futuros: GET /api/v1/private/account/assets → data[].currency === "USDT"
+  // Saldo = availableBalance + positionMargin
   let futuresUsdt = 0
   try {
     const futData = await mexcRequest('/api/v1/private/account/assets')
-    if (futData?.data) {
+    if (Array.isArray(futData?.data)) {
       for (const b of futData.data) {
         if (b.currency === 'USDT') {
-          futuresUsdt = parseFloat(b.positionMargin ?? 0) + parseFloat(b.availableBalance ?? 0)
+          futuresUsdt = parseFloat(b.availableBalance ?? '0') + parseFloat(b.positionMargin ?? '0')
+          break
         }
       }
     }
-  } catch { /* futures not critical */ }
+  } catch (err: any) {
+    console.warn('[MEXC futures]', err?.message)
+  }
 
   return spotUsdt + futuresUsdt
 }
