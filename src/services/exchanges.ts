@@ -19,9 +19,9 @@ async function hmacSha256(secret: string, message: string): Promise<string> {
 // BingX  →  /api/bingx-proxy?path=<exchange-path>&<query-params>
 // ---------------------------------------------------------------------------
 export async function fetchBingXBalance(apiKey: string, secret: string): Promise<number> {
-  async function bingxFetch(exchangePath: string, params: Record<string, string> = {}): Promise<any> {
+  async function bingxFetch(exchangePath: string): Promise<any> {
     const timestamp = Date.now().toString()
-    const query = new URLSearchParams({ ...params, timestamp }).toString()
+    const query = new URLSearchParams({ timestamp }).toString()
     const signature = await hmacSha256(secret, query)
     const url = `/api/bingx-proxy?path=${encodeURIComponent(exchangePath)}&${query}&signature=${signature}`
     const res = await fetch(url, { headers: { 'X-BX-APIKEY': apiKey } })
@@ -30,27 +30,36 @@ export async function fetchBingXBalance(apiKey: string, secret: string): Promise
       throw new Error(`BingX HTTP ${res.status}: ${body}`)
     }
     const data = await res.json()
-    if (data.code !== 0) throw new Error(`BingX: ${data.msg}`)
+    if (data.code !== 0) throw new Error(`BingX erro ${data.code}: ${data.msg}`)
     return data
   }
 
-  const spotData = await bingxFetch('/openApi/spot/v1/account/balance')
+  // Spot: data.balances é array — { asset, free, locked }
+  // parseFloat lida com notação científica como "1.5e-9"
   let spotUsdt = 0
-  if (spotData?.data?.balances) {
+  const spotData = await bingxFetch('/openApi/spot/v1/account/balance')
+  if (Array.isArray(spotData?.data?.balances)) {
     for (const b of spotData.data.balances) {
-      if (b.asset === 'USDT') spotUsdt = parseFloat(b.free ?? 0) + parseFloat(b.locked ?? 0)
+      if (b.asset === 'USDT') {
+        spotUsdt = parseFloat(b.free ?? '0') + parseFloat(b.locked ?? '0')
+        break
+      }
     }
   }
 
+  // Futuros: data.balance é objeto — { asset, balance, equity }
+  // Usa balance (saldo total), não equity (inclui PnL não realizado)
   let futuresUsdt = 0
   try {
     const futData = await bingxFetch('/openApi/swap/v2/user/balance')
-    // data.balance é um objeto { asset, balance, equity }, não um array
     const bal = futData?.data?.balance
-    if (bal) {
-      futuresUsdt = parseFloat(bal.balance ?? bal.equity ?? 0)
+    if (bal && typeof bal === 'object') {
+      futuresUsdt = parseFloat(bal.balance ?? '0')
     }
-  } catch { /* futures not critical */ }
+  } catch (err: any) {
+    // Não crítico: conta pode não ter futuros habilitado
+    console.warn('[BingX futures]', err?.message)
+  }
 
   return spotUsdt + futuresUsdt
 }
