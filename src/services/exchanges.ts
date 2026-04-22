@@ -66,21 +66,38 @@ export async function fetchBingXBalance(apiKey: string, secret: string): Promise
 
 // ---------------------------------------------------------------------------
 // Gate.io  →  /api/gate-proxy?path=<exchange-path>  (auth via headers)
+// Gate.io v4 usa HMAC-SHA512 e timestamp em segundos
 // ---------------------------------------------------------------------------
+async function hmacSha512(secret: string, message: string): Promise<string> {
+  const enc = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-512' },
+    false,
+    ['sign']
+  )
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(message))
+  return Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
 export async function fetchGateBalance(apiKey: string, secret: string): Promise<number> {
   async function gateRequest(method: string, exchangePath: string): Promise<any> {
     const timestamp = Math.floor(Date.now() / 1000).toString()
-    const bodyHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    // SHA-256 do body vazio (requisição GET sem body)
+    const bodyHash = 'cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e'
+    // String de assinatura: METHOD\nPATH\nQUERY_STRING\nBODY_HASH\nTIMESTAMP
     const signStr = `${method}\n${exchangePath}\n\n${bodyHash}\n${timestamp}`
-    const signature = await hmacSha256(secret, signStr)
+    const signature = await hmacSha512(secret, signStr)
     const url = `/api/gate-proxy?path=${encodeURIComponent(exchangePath)}`
     const res = await fetch(url, {
       method,
       headers: {
         KEY: apiKey,
-        Timestamp: timestamp,
         SIGN: signature,
-        'Content-Type': 'application/json',
+        Timestamp: timestamp,
       },
     })
     if (!res.ok) {
@@ -90,17 +107,24 @@ export async function fetchGateBalance(apiKey: string, secret: string): Promise<
     return res.json()
   }
 
+  // Spot: GET /api/v4/spot/accounts → filtra currency === "USDT"
   const spotAccounts: any[] = await gateRequest('GET', '/api/v4/spot/accounts')
   let spotUsdt = 0
   for (const acc of spotAccounts) {
-    if (acc.currency === 'USDT') spotUsdt = parseFloat(acc.available ?? 0) + parseFloat(acc.locked ?? 0)
+    if (acc.currency === 'USDT') {
+      spotUsdt = parseFloat(acc.available ?? '0') + parseFloat(acc.locked ?? '0')
+      break
+    }
   }
 
+  // Futuros: GET /futures/usdt/accounts → campo total
   let futuresUsdt = 0
   try {
-    const futAcc = await gateRequest('GET', '/api/v4/futures/usdt/accounts')
-    futuresUsdt = parseFloat(futAcc?.total ?? 0)
-  } catch { /* futures not critical */ }
+    const futAcc = await gateRequest('GET', '/futures/usdt/accounts')
+    futuresUsdt = parseFloat(futAcc?.total ?? '0')
+  } catch (err: any) {
+    console.warn('[Gate.io futures]', err?.message)
+  }
 
   return spotUsdt + futuresUsdt
 }
