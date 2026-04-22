@@ -1,8 +1,10 @@
-import type { Config, DayRecord } from '../types'
+import type { Config, DayRecord, Operation, RefreshInterval } from '../types'
 
 const KEYS = {
   config: 'aura_config',
   history: 'aura_history',
+  operations: 'aura_operations',
+  refreshInterval: 'aura_refresh_interval',
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -52,9 +54,49 @@ export function getDayRecord(date: string): DayRecord | undefined {
   return getHistory().find((r) => r.date === date)
 }
 
+export function getOperations(): Operation[] {
+  try {
+    const raw = localStorage.getItem(KEYS.operations)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+export function saveOperations(ops: Operation[]): void {
+  localStorage.setItem(KEYS.operations, JSON.stringify(ops))
+}
+
+export function upsertOperation(op: Operation): void {
+  const ops = getOperations()
+  const idx = ops.findIndex((o) => o.id === op.id)
+  if (idx >= 0) ops[idx] = op
+  else ops.push(op)
+  saveOperations(ops)
+}
+
+export function deleteOperation(id: string): void {
+  saveOperations(getOperations().filter((o) => o.id !== id))
+}
+
+export function getRefreshInterval(): RefreshInterval {
+  try {
+    const raw = localStorage.getItem(KEYS.refreshInterval)
+    const val = raw ? parseInt(raw) : 60
+    return ([20, 60, 120, 240].includes(val) ? val : 60) as RefreshInterval
+  } catch {
+    return 60
+  }
+}
+
+export function saveRefreshInterval(interval: RefreshInterval): void {
+  localStorage.setItem(KEYS.refreshInterval, String(interval))
+}
+
 export function clearAllData(): void {
   localStorage.removeItem(KEYS.config)
   localStorage.removeItem(KEYS.history)
+  localStorage.removeItem(KEYS.operations)
 }
 
 export function exportCSV(records: DayRecord[]): void {

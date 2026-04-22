@@ -1,16 +1,17 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, History, BarChart2, Settings } from 'lucide-react'
+import { LayoutDashboard, Building2, ArrowLeftRight, BarChart2, Settings } from 'lucide-react'
 
 const TABS = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/history', icon: History, label: 'Histórico' },
-  { to: '/charts', icon: BarChart2, label: 'Gráficos' },
+  { to: '/exchanges', icon: Building2, label: 'Corretoras' },
+  { to: '/operations', icon: ArrowLeftRight, label: 'Operações' },
+  { to: '/statistics', icon: BarChart2, label: 'Estatísticas' },
   { to: '/settings', icon: Settings, label: 'Config' },
 ]
 
 export default function BottomNav() {
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-50 bg-slate-900 border-t border-slate-700/60 flex items-stretch safe-bottom">
+    <nav className="fixed bottom-0 left-0 right-0 z-50 bg-slate-900 border-t border-slate-700/60 flex items-stretch safe-bottom max-w-lg mx-auto">
       {TABS.map(({ to, icon: Icon, label }) => (
         <NavLink
           key={to}
@@ -22,8 +23,8 @@ export default function BottomNav() {
             }`
           }
         >
-          <Icon size={22} strokeWidth={1.8} />
-          <span>{label}</span>
+          <Icon size={20} strokeWidth={1.8} />
+          <span className="text-[10px]">{label}</span>
         </NavLink>
       ))}
     </nav>

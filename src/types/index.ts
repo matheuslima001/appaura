@@ -37,3 +37,20 @@ export interface ExchangeStatus {
   loading: boolean
   error: string | null
 }
+
+export interface Operation {
+  id: string
+  pair: string
+  exchange: ExchangeId
+  type: 'SPOT' | 'FUTURES'
+  side: 'LONG' | 'SHORT'
+  entryPrice: number
+  currentPrice: number
+  qty: number
+  openedAt: string
+  closedAt?: string
+  exitPrice?: number
+  status: 'open' | 'closed'
+}
+
+export type RefreshInterval = 20 | 60 | 120 | 240

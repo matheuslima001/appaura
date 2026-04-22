@@ -1,68 +1,77 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { RefreshCw, Play, StopCircle, TrendingUp, TrendingDown, Clock } from 'lucide-react'
-import ExchangeCard from '../components/ExchangeCard'
 import Spinner from '../components/Spinner'
-import { getConfig, getDayRecord, upsertDayRecord } from '../services/storage'
+import { getConfig, getDayRecord, upsertDayRecord, getHistory, getOperations } from '../services/storage'
 import { fetchAllBalances } from '../services/exchanges'
 import { getUsdBrlRate } from '../services/rates'
+import { useBalances } from '../context/BalancesContext'
 import { formatUSDT, formatBRL, formatPct, formatDate, todayStr, formatTime } from '../utils/format'
-import type { DayRecord, ExchangeStatus } from '../types'
+import type { DayRecord } from '../types'
+
+function pnlForPeriod(days: number, history: DayRecord[]) {
+  const closed = history.filter((r) => r.closed && r.profitUSDT !== undefined)
+  if (days === 0) return closed.reduce((s, r) => s + (r.profitUSDT ?? 0), 0)
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - days)
+  const cutoffStr = cutoff.toISOString().split('T')[0]
+  return closed.filter((r) => r.date >= cutoffStr).reduce((s, r) => s + (r.profitUSDT ?? 0), 0)
+}
+
+function yesterdayStr() {
+  const d = new Date()
+  d.setDate(d.getDate() - 1)
+  return d.toISOString().split('T')[0]
+}
 
 export default function Dashboard() {
   const today = todayStr()
+  const yesterday = yesterdayStr()
+  const { totalBalance, usdBrl, loading: ctxLoading, lastUpdate, refresh } = useBalances()
   const [dayRecord, setDayRecord] = useState<DayRecord | undefined>(() => getDayRecord(today))
-  const [usdBrl, setUsdBrl] = useState<number>(5.0)
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
-  const [globalLoading, setGlobalLoading] = useState(false)
-  const [exchanges, setExchanges] = useState<ExchangeStatus[]>([
-    { id: 'bingx', name: 'BingX', balance: null, loading: false, error: null },
-    { id: 'gate', name: 'Gate.io', balance: null, loading: false, error: null },
-    { id: 'mexc', name: 'MEXC', balance: null, loading: false, error: null },
-  ])
+  const [actionLoading, setActionLoading] = useState(false)
 
+  const loading = ctxLoading || actionLoading
   const config = getConfig()
+  const history = getHistory()
+  const operations = getOperations()
+  const openOps = operations.filter((o) => o.status === 'open')
+  const inPositions = openOps.reduce((s, o) => s + o.entryPrice * o.qty, 0)
+  const available = totalBalance - inPositions
 
-  const totalBalance = exchanges.reduce((s, e) => s + (e.balance ?? 0), 0)
+  const todayRecord = getDayRecord(today)
+  const yesterdayRecord = getDayRecord(yesterday)
 
-  const refreshBalances = useCallback(async () => {
-    setGlobalLoading(true)
-    setExchanges((prev) => prev.map((e) => ({ ...e, loading: true, error: null })))
-    try {
-      const [rate, balances] = await Promise.all([getUsdBrlRate(), fetchAllBalances(config)])
-      setUsdBrl(rate)
-      setExchanges((prev) =>
-        prev.map((e) => {
-          const key = e.id as keyof typeof balances
-          const cfg = config[key]
-          if (!cfg.enabled) return { ...e, loading: false, balance: null, error: null }
-          return { ...e, loading: false, balance: balances[key], error: null }
-        })
-      )
-      setLastUpdate(new Date())
-      toast.success('Saldos atualizados')
-    } catch (err: any) {
-      toast.error('Erro ao atualizar saldos')
-      setExchanges((prev) => prev.map((e) => ({ ...e, loading: false, error: e.loading ? 'Erro de conexão' : e.error })))
-    } finally {
-      setGlobalLoading(false)
-    }
-  }, [])
+  const todayPnl = todayRecord?.closed
+    ? todayRecord.profitUSDT ?? 0
+    : todayRecord
+    ? totalBalance - todayRecord.startBalance.total
+    : 0
 
-  useEffect(() => {
-    // load cached rate on mount
-    getUsdBrlRate().then(setUsdBrl)
-  }, [])
+  const yesterdayPnl = yesterdayRecord?.profitUSDT ?? 0
+  const pnl7d = pnlForPeriod(7, history)
+  const pnl30d = pnlForPeriod(30, history)
+
+  const profit = dayRecord?.closed
+    ? { usdt: dayRecord.profitUSDT ?? 0, brl: dayRecord.profitBRL ?? 0, pct: dayRecord.profitPct ?? 0 }
+    : dayRecord
+    ? {
+        usdt: totalBalance - dayRecord.startBalance.total,
+        brl: (totalBalance - dayRecord.startBalance.total) * usdBrl,
+        pct:
+          dayRecord.startBalance.total > 0
+            ? ((totalBalance - dayRecord.startBalance.total) / dayRecord.startBalance.total) * 100
+            : 0,
+      }
+    : null
+
+  const profitPositive = profit ? profit.usdt >= 0 : null
 
   async function handleStartDay() {
-    if (dayRecord) {
-      toast.error('Dia já iniciado')
-      return
-    }
-    setGlobalLoading(true)
+    if (dayRecord) { toast.error('Dia já iniciado'); return }
+    setActionLoading(true)
     try {
       const [rate, balances] = await Promise.all([getUsdBrlRate(), fetchAllBalances(config)])
-      setUsdBrl(rate)
       const record: DayRecord = {
         date: today,
         startBalance: {
@@ -76,33 +85,19 @@ export default function Dashboard() {
       }
       upsertDayRecord(record)
       setDayRecord(record)
-      setExchanges((prev) =>
-        prev.map((e) => ({
-          ...e,
-          balance: balances[e.id as keyof typeof balances],
-          loading: false,
-          error: null,
-        }))
-      )
-      setLastUpdate(new Date())
+      await refresh()
       toast.success('Dia iniciado!')
     } catch {
       toast.error('Erro ao buscar saldos')
     } finally {
-      setGlobalLoading(false)
+      setActionLoading(false)
     }
   }
 
   async function handleCloseDay() {
-    if (!dayRecord) {
-      toast.error('Inicie o dia primeiro')
-      return
-    }
-    if (dayRecord.closed) {
-      toast.error('Dia já fechado')
-      return
-    }
-    setGlobalLoading(true)
+    if (!dayRecord) { toast.error('Inicie o dia primeiro'); return }
+    if (dayRecord.closed) { toast.error('Dia já fechado'); return }
+    setActionLoading(true)
     try {
       const [rate, balances] = await Promise.all([getUsdBrlRate(), fetchAllBalances(config)])
       const endTotal = balances.bingx + balances.gate + balances.mexc
@@ -120,33 +115,32 @@ export default function Dashboard() {
       }
       upsertDayRecord(updated)
       setDayRecord(updated)
-      setUsdBrl(rate)
-      setExchanges((prev) =>
-        prev.map((e) => ({ ...e, balance: balances[e.id as keyof typeof balances], loading: false, error: null }))
-      )
-      setLastUpdate(new Date())
+      await refresh()
       toast.success('Dia fechado com sucesso!')
     } catch {
       toast.error('Erro ao fechar o dia')
     } finally {
-      setGlobalLoading(false)
+      setActionLoading(false)
     }
   }
 
-  const profit = dayRecord?.closed
-    ? { usdt: dayRecord.profitUSDT ?? 0, brl: dayRecord.profitBRL ?? 0, pct: dayRecord.profitPct ?? 0 }
-    : dayRecord
-    ? {
-        usdt: totalBalance - dayRecord.startBalance.total,
-        brl: (totalBalance - dayRecord.startBalance.total) * usdBrl,
-        pct:
-          dayRecord.startBalance.total > 0
-            ? ((totalBalance - dayRecord.startBalance.total) / dayRecord.startBalance.total) * 100
-            : 0,
-      }
-    : null
+  async function handleRefresh() {
+    await refresh()
+    toast.success('Saldos atualizados')
+  }
 
-  const profitPositive = profit ? profit.usdt >= 0 : null
+  const PnlPill = ({ label, value }: { label: string; value: number }) => {
+    const pos = value >= 0
+    return (
+      <div className="flex-1 rounded-xl bg-slate-800/60 border border-slate-700/50 p-3">
+        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">{label}</p>
+        <p className={`text-sm font-semibold ${pos ? 'text-emerald-400' : 'text-red-400'}`}>
+          {value >= 0 ? '+' : ''}{formatUSDT(value)}
+        </p>
+        <p className="text-[10px] text-slate-500">{formatBRL(value * usdBrl)}</p>
+      </div>
+    )
+  }
 
   return (
     <div className="flex-1 px-4 pt-6 pb-28 space-y-4">
@@ -164,11 +158,11 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Total Balance Card */}
+      {/* Total Balance */}
       <div className="rounded-2xl bg-gradient-to-br from-violet-600/30 to-indigo-800/20 border border-violet-500/30 p-5">
         <p className="text-xs text-violet-300 uppercase tracking-wider mb-1">Saldo Total</p>
         <div className="flex items-end gap-3">
-          {globalLoading ? (
+          {loading ? (
             <Spinner size={28} />
           ) : (
             <>
@@ -180,12 +174,39 @@ export default function Dashboard() {
         <p className="text-sm text-slate-400 mt-1">{formatBRL(totalBalance * usdBrl)}</p>
         {dayRecord && (
           <p className="text-xs text-slate-500 mt-2">
-            Banca inicial: {formatUSDT(dayRecord.startBalance.total)} USDT
+            Abertura: {formatUSDT(dayRecord.startBalance.total)} USDT
           </p>
         )}
       </div>
 
-      {/* Profit Card */}
+      {/* Summary cards */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 p-3">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Disponível</p>
+          <p className="text-sm font-semibold text-white">{formatUSDT(available)}</p>
+        </div>
+        <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 p-3">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Em Posições</p>
+          <p className="text-sm font-semibold text-amber-400">{formatUSDT(inPositions)}</p>
+        </div>
+        <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 p-3">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Ops Abertas</p>
+          <p className="text-sm font-semibold text-white">{openOps.length}</p>
+        </div>
+      </div>
+
+      {/* PnL by period */}
+      <div>
+        <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">PnL por Período</p>
+        <div className="flex gap-2">
+          <PnlPill label="Hoje" value={todayPnl} />
+          <PnlPill label="Ontem" value={yesterdayPnl} />
+          <PnlPill label="7d" value={pnl7d} />
+          <PnlPill label="30d" value={pnl30d} />
+        </div>
+      </div>
+
+      {/* Day Profit */}
       {profit !== null && (
         <div className={`rounded-2xl border p-5 ${profitPositive ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-red-500/10 border-red-500/30'}`}>
           <div className="flex items-center gap-2 mb-2">
@@ -206,65 +227,50 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Exchange Cards */}
-      <div className="grid grid-cols-1 gap-3">
-        {exchanges.map((ex) => (
-          <ExchangeCard
-            key={ex.id}
-            name={ex.name}
-            balance={ex.balance}
-            loading={ex.loading}
-            error={ex.error}
-            enabled={config[ex.id].enabled}
-          />
-        ))}
-      </div>
-
       {/* Action Buttons */}
       <div className="space-y-3 pt-2">
         {!dayRecord && (
           <button
             onClick={handleStartDay}
-            disabled={globalLoading}
+            disabled={loading}
             className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-semibold transition-colors"
           >
-            {globalLoading ? <Spinner size={18} /> : <Play size={18} />}
+            {loading ? <Spinner size={18} /> : <Play size={18} />}
             Iniciar Dia
           </button>
         )}
         {dayRecord && !dayRecord.closed && (
           <>
             <button
-              onClick={refreshBalances}
-              disabled={globalLoading}
+              onClick={handleRefresh}
+              disabled={loading}
               className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-semibold transition-colors"
             >
-              {globalLoading ? <Spinner size={18} /> : <RefreshCw size={18} />}
+              {loading ? <Spinner size={18} /> : <RefreshCw size={18} />}
               Atualizar Saldos
             </button>
             <button
               onClick={handleCloseDay}
-              disabled={globalLoading}
+              disabled={loading}
               className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white font-semibold transition-colors"
             >
-              {globalLoading ? <Spinner size={18} /> : <StopCircle size={18} />}
+              {loading ? <Spinner size={18} /> : <StopCircle size={18} />}
               Fechar Dia
             </button>
           </>
         )}
         {dayRecord?.closed && (
           <button
-            onClick={refreshBalances}
-            disabled={globalLoading}
+            onClick={handleRefresh}
+            disabled={loading}
             className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-semibold transition-colors"
           >
-            {globalLoading ? <Spinner size={18} /> : <RefreshCw size={18} />}
+            {loading ? <Spinner size={18} /> : <RefreshCw size={18} />}
             Atualizar Saldos
           </button>
         )}
       </div>
 
-      {/* Cotação */}
       <p className="text-center text-xs text-slate-600 pb-2">
         USD/BRL: R$ {usdBrl.toFixed(4)}
       </p>

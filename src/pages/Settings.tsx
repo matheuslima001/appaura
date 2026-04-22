@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { Eye, EyeOff, CheckCircle, XCircle, Download, Trash2, Wifi } from 'lucide-react'
-import { getConfig, saveConfig, getHistory, clearAllData, exportCSV } from '../services/storage'
+import { getConfig, saveConfig, getHistory, clearAllData, exportCSV, getRefreshInterval, saveRefreshInterval } from '../services/storage'
 import { fetchExchangeBalance } from '../services/exchanges'
 import Spinner from '../components/Spinner'
-import type { Config, ExchangeId } from '../types'
+import type { Config, ExchangeId, RefreshInterval } from '../types'
 
 interface ExchangeFieldProps {
   id: ExchangeId
@@ -86,8 +86,16 @@ function ExchangeField({ id, name, config, onChange, onToggle, onTest, testing, 
   )
 }
 
+const REFRESH_PRESETS: { label: string; value: RefreshInterval; desc: string }[] = [
+  { label: 'Rápido', value: 20, desc: '20s' },
+  { label: 'Balanceado', value: 60, desc: '60s' },
+  { label: 'Econômico', value: 120, desc: '120s' },
+  { label: 'Seguro', value: 240, desc: '240s' },
+]
+
 export default function Settings() {
   const [config, setConfig] = useState<Config>(() => getConfig())
+  const [refreshInterval, setRefreshIntervalState] = useState<RefreshInterval>(() => getRefreshInterval())
   const [testing, setTesting] = useState<Partial<Record<ExchangeId, boolean>>>({})
   const [testResults, setTestResults] = useState<Partial<Record<ExchangeId, 'ok' | 'fail'>>>({})
   const [showClearConfirm, setShowClearConfirm] = useState(false)
@@ -111,6 +119,8 @@ export default function Settings() {
 
   function handleSave() {
     saveConfig(config)
+    saveRefreshInterval(refreshInterval)
+    window.dispatchEvent(new StorageEvent('storage', { key: 'aura_refresh_interval' }))
     toast.success('Configurações salvas!')
   }
 
@@ -154,8 +164,29 @@ export default function Settings() {
       </div>
 
       <p className="text-xs text-slate-500 bg-slate-800/60 rounded-xl p-3 border border-slate-700/50">
-        🔒 Suas chaves são salvas apenas no seu dispositivo (localStorage). Nunca são enviadas a nenhum servidor externo.
+        Suas chaves são salvas apenas no seu dispositivo (localStorage). Nunca são enviadas a nenhum servidor externo.
       </p>
+
+      {/* Auto-refresh */}
+      <div className="rounded-2xl bg-slate-800/60 border border-slate-700/50 p-4 space-y-3">
+        <p className="font-semibold text-white">Taxa de Atualização</p>
+        <div className="grid grid-cols-2 gap-2">
+          {REFRESH_PRESETS.map(({ label, value, desc }) => (
+            <button
+              key={value}
+              onClick={() => setRefreshIntervalState(value)}
+              className={`py-2.5 px-3 rounded-xl text-sm font-medium transition-colors border ${
+                refreshInterval === value
+                  ? 'bg-violet-600 border-violet-500 text-white'
+                  : 'bg-slate-700/40 border-slate-600/50 text-slate-400 hover:text-white'
+              }`}
+            >
+              <p>{label}</p>
+              <p className="text-[10px] opacity-70">{desc}</p>
+            </button>
+          ))}
+        </div>
+      </div>
 
       {(['bingx', 'gate', 'mexc'] as ExchangeId[]).map((id) => (
         <ExchangeField
