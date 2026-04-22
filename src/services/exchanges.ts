@@ -148,54 +148,32 @@ export async function fetchGateBalance(apiKey: string, secret: string): Promise<
 // MEXC Futuros → /api/mexc-futures-proxy (contract.mexc.com)
 // ---------------------------------------------------------------------------
 export async function fetchMexcBalance(apiKey: string, secret: string): Promise<number> {
-  async function mexcRequest(proxyRoute: string, exchangePath: string, apiKeyHeader = 'X-MEXC-APIKEY'): Promise<any> {
+  async function mexcRequest(exchangePath: string): Promise<any> {
     const timestamp = Date.now().toString()
     const query = new URLSearchParams({ timestamp }).toString()
     const signature = await hmacSha256(secret, query)
-    const url = `${proxyRoute}?path=${encodeURIComponent(exchangePath)}&${query}&signature=${signature}`
-    const res = await fetch(url, { headers: { [apiKeyHeader]: apiKey } })
+    const url = `/api/mexc-proxy?path=${encodeURIComponent(exchangePath)}&${query}&signature=${signature}`
+    const res = await fetch(url, { headers: { 'X-MEXC-APIKEY': apiKey } })
     if (!res.ok) {
       const body = await res.text()
       throw new Error(`MEXC HTTP ${res.status}: ${body}`)
     }
-    const json = await res.json()
-    if (json?.code !== undefined && json.code !== 0 && json.code !== 200) {
-      throw new Error(`MEXC erro ${json.code}: ${json.msg ?? json.message ?? JSON.stringify(json)}`)
-    }
-    return json
+    return res.json()
   }
 
-  // Spot: api.mexc.com → GET /api/v3/account → balances[].asset === "USDT"
-  const spotData = await mexcRequest('/api/mexc-proxy', '/api/v3/account')
-  let spotUsdt = 0
-  if (Array.isArray(spotData?.balances)) {
-    for (const b of spotData.balances) {
+  // GET /api/v3/account → balances[{ asset, free, locked }]
+  // Retorna saldo spot; futuros MEXC ficam em conta separada não acessível por esta chave
+  const data = await mexcRequest('/api/v3/account')
+  let usdt = 0
+  if (Array.isArray(data?.balances)) {
+    for (const b of data.balances) {
       if (b.asset === 'USDT') {
-        spotUsdt = parseFloat(b.free ?? '0') + parseFloat(b.locked ?? '0')
+        usdt = parseFloat(b.free ?? '0') + parseFloat(b.locked ?? '0')
         break
       }
     }
   }
-
-  // Futuros: contract.mexc.com → GET /api/v1/private/account/assets
-  // Header: ApiKey (diferente do spot que usa X-MEXC-APIKEY)
-  // Resposta: { success: true, data: [{ currency: "USDT", availableBalance, positionMargin }] }
-  let futuresUsdt = 0
-  try {
-    const futData = await mexcRequest('/api/mexc-futures-proxy', '/api/v1/private/account/assets', 'ApiKey')
-    if (Array.isArray(futData?.data)) {
-      for (const b of futData.data) {
-        if (b.currency === 'USDT') {
-          futuresUsdt = parseFloat(b.availableBalance ?? '0') + parseFloat(b.positionMargin ?? '0')
-          break
-        }
-      }
-    }
-  } catch (err: any) {
-    console.warn('[MEXC futures]', err?.message)
-  }
-
-  return spotUsdt + futuresUsdt
+  return usdt
 }
 
 // ---------------------------------------------------------------------------
