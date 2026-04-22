@@ -45,10 +45,10 @@ export async function fetchBingXBalance(apiKey: string, secret: string): Promise
   let futuresUsdt = 0
   try {
     const futData = await bingxFetch('/openApi/swap/v2/user/balance')
-    if (futData?.data?.balance) {
-      for (const b of futData.data.balance) {
-        if (b.asset === 'USDT') futuresUsdt = parseFloat(b.balance ?? 0)
-      }
+    // data.balance é um objeto { asset, balance, equity }, não um array
+    const bal = futData?.data?.balance
+    if (bal) {
+      futuresUsdt = parseFloat(bal.balance ?? bal.equity ?? 0)
     }
   } catch { /* futures not critical */ }
 
