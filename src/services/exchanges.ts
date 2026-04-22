@@ -148,17 +148,21 @@ export async function fetchGateBalance(apiKey: string, secret: string): Promise<
 // MEXC Futuros → /api/mexc-futures-proxy (contract.mexc.com)
 // ---------------------------------------------------------------------------
 export async function fetchMexcBalance(apiKey: string, secret: string): Promise<number> {
-  async function mexcRequest(proxyRoute: string, exchangePath: string): Promise<any> {
+  async function mexcRequest(proxyRoute: string, exchangePath: string, apiKeyHeader = 'X-MEXC-APIKEY'): Promise<any> {
     const timestamp = Date.now().toString()
     const query = new URLSearchParams({ timestamp }).toString()
     const signature = await hmacSha256(secret, query)
     const url = `${proxyRoute}?path=${encodeURIComponent(exchangePath)}&${query}&signature=${signature}`
-    const res = await fetch(url, { headers: { 'X-MEXC-APIKEY': apiKey } })
+    const res = await fetch(url, { headers: { [apiKeyHeader]: apiKey } })
     if (!res.ok) {
       const body = await res.text()
       throw new Error(`MEXC HTTP ${res.status}: ${body}`)
     }
-    return res.json()
+    const json = await res.json()
+    if (json?.code !== undefined && json.code !== 0 && json.code !== 200) {
+      throw new Error(`MEXC erro ${json.code}: ${json.msg ?? json.message ?? JSON.stringify(json)}`)
+    }
+    return json
   }
 
   // Spot: api.mexc.com → GET /api/v3/account → balances[].asset === "USDT"
@@ -174,10 +178,11 @@ export async function fetchMexcBalance(apiKey: string, secret: string): Promise<
   }
 
   // Futuros: contract.mexc.com → GET /api/v1/private/account/assets
-  // Saldo = availableBalance + positionMargin para currency === "USDT"
+  // Header: ApiKey (diferente do spot que usa X-MEXC-APIKEY)
+  // Resposta: { success: true, data: [{ currency: "USDT", availableBalance, positionMargin }] }
   let futuresUsdt = 0
   try {
-    const futData = await mexcRequest('/api/mexc-futures-proxy', '/api/v1/private/account/assets')
+    const futData = await mexcRequest('/api/mexc-futures-proxy', '/api/v1/private/account/assets', 'ApiKey')
     if (Array.isArray(futData?.data)) {
       for (const b of futData.data) {
         if (b.currency === 'USDT') {
