@@ -84,21 +84,16 @@ async function hmacSha512(secret: string, message: string): Promise<string> {
 }
 
 export async function fetchGateBalance(apiKey: string, secret: string): Promise<number> {
-  async function gateRequest(method: string, exchangePath: string): Promise<any> {
+  async function gateRequest(method: string, exchangePath: string, queryString = ''): Promise<any> {
     const timestamp = Math.floor(Date.now() / 1000).toString()
-    // SHA-256 do body vazio (requisição GET sem body)
     const bodyHash = 'cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e'
-    // String de assinatura: METHOD\nPATH\nQUERY_STRING\nBODY_HASH\nTIMESTAMP
-    const signStr = `${method}\n${exchangePath}\n\n${bodyHash}\n${timestamp}`
+    const signStr = `${method}\n${exchangePath}\n${queryString}\n${bodyHash}\n${timestamp}`
     const signature = await hmacSha512(secret, signStr)
-    const url = `/api/gate-proxy?path=${encodeURIComponent(exchangePath)}`
+    const fullPath = queryString ? `${exchangePath}?${queryString}` : exchangePath
+    const url = `/api/gate-proxy?path=${encodeURIComponent(fullPath)}`
     const res = await fetch(url, {
       method,
-      headers: {
-        KEY: apiKey,
-        SIGN: signature,
-        Timestamp: timestamp,
-      },
+      headers: { KEY: apiKey, SIGN: signature, Timestamp: timestamp },
     })
     if (!res.ok) {
       const body = await res.text()
@@ -107,15 +102,34 @@ export async function fetchGateBalance(apiKey: string, secret: string): Promise<
     return res.json()
   }
 
-  // Spot: GET /api/v4/spot/accounts → filtra currency === "USDT"
+  // Spot: busca todos os saldos e converte cada moeda para USDT
   const spotAccounts: any[] = await gateRequest('GET', '/api/v4/spot/accounts')
+
+  // Coleta moedas com saldo > 0
+  const nonZero = spotAccounts.filter((a) => {
+    const total = parseFloat(a.available ?? '0') + parseFloat(a.locked ?? '0')
+    return total > 0
+  })
+
   let spotUsdt = 0
-  for (const acc of spotAccounts) {
-    if (acc.currency === 'USDT') {
-      spotUsdt = parseFloat(acc.available ?? '0') + parseFloat(acc.locked ?? '0')
-      break
-    }
-  }
+  await Promise.all(
+    nonZero.map(async (acc) => {
+      const amount = parseFloat(acc.available ?? '0') + parseFloat(acc.locked ?? '0')
+      if (acc.currency === 'USDT') {
+        spotUsdt += amount
+        return
+      }
+      // Converte para USDT via ticker
+      try {
+        const pair = `${acc.currency}_USDT`
+        const tickers = await gateRequest('GET', '/api/v4/spot/tickers', `currency_pair=${pair}`)
+        const price = parseFloat(tickers?.[0]?.last ?? '0')
+        if (price > 0) spotUsdt += amount * price
+      } catch {
+        // Par sem mercado USDT — ignora
+      }
+    })
+  )
 
   // Futuros: GET /futures/usdt/accounts → campo total
   let futuresUsdt = 0
@@ -130,14 +144,15 @@ export async function fetchGateBalance(apiKey: string, secret: string): Promise<
 }
 
 // ---------------------------------------------------------------------------
-// MEXC  →  /api/mexc-proxy?path=<exchange-path>&<query-params>
+// MEXC Spot  →  /api/mexc-proxy         (api.mexc.com)
+// MEXC Futuros → /api/mexc-futures-proxy (contract.mexc.com)
 // ---------------------------------------------------------------------------
 export async function fetchMexcBalance(apiKey: string, secret: string): Promise<number> {
-  async function mexcRequest(exchangePath: string, params: Record<string, string> = {}): Promise<any> {
+  async function mexcRequest(proxyRoute: string, exchangePath: string): Promise<any> {
     const timestamp = Date.now().toString()
-    const query = new URLSearchParams({ ...params, timestamp }).toString()
+    const query = new URLSearchParams({ timestamp }).toString()
     const signature = await hmacSha256(secret, query)
-    const url = `/api/mexc-proxy?path=${encodeURIComponent(exchangePath)}&${query}&signature=${signature}`
+    const url = `${proxyRoute}?path=${encodeURIComponent(exchangePath)}&${query}&signature=${signature}`
     const res = await fetch(url, { headers: { 'X-MEXC-APIKEY': apiKey } })
     if (!res.ok) {
       const body = await res.text()
@@ -146,8 +161,8 @@ export async function fetchMexcBalance(apiKey: string, secret: string): Promise<
     return res.json()
   }
 
-  // Spot: GET /api/v3/account → balances[].asset === "USDT"
-  const spotData = await mexcRequest('/api/v3/account')
+  // Spot: api.mexc.com → GET /api/v3/account → balances[].asset === "USDT"
+  const spotData = await mexcRequest('/api/mexc-proxy', '/api/v3/account')
   let spotUsdt = 0
   if (Array.isArray(spotData?.balances)) {
     for (const b of spotData.balances) {
@@ -158,11 +173,11 @@ export async function fetchMexcBalance(apiKey: string, secret: string): Promise<
     }
   }
 
-  // Futuros: GET /api/v1/private/account/assets → data[].currency === "USDT"
-  // Saldo = availableBalance + positionMargin
+  // Futuros: contract.mexc.com → GET /api/v1/private/account/assets
+  // Saldo = availableBalance + positionMargin para currency === "USDT"
   let futuresUsdt = 0
   try {
-    const futData = await mexcRequest('/api/v1/private/account/assets')
+    const futData = await mexcRequest('/api/mexc-futures-proxy', '/api/v1/private/account/assets')
     if (Array.isArray(futData?.data)) {
       for (const b of futData.data) {
         if (b.currency === 'USDT') {
